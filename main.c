@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <ncurses.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,11 +16,9 @@ typedef struct {
     Row *rows;
     int num_rows;
 
-    // 光标在文本中的位置
     int cx;
     int cy;
 
-    // 文件是否被修改
     int modified;
 } Editor;
 
@@ -44,6 +44,37 @@ void editor_insert_row(Editor *e, const char *s, int len)
     row->len = len;
 
     e->num_rows++;
+}
+
+
+void editor_delete_row(Editor *e, int at)
+{
+    if (at < 0 || at >= e->num_rows) {
+        return;
+    }
+
+    free(e->rows[at].chars);
+
+    /*
+     * 把后面的 Row 往前移动。
+     */
+    memmove(
+        &e->rows[at],
+        &e->rows[at + 1],
+        sizeof(Row) * (e->num_rows - at - 1)
+    );
+
+    e->num_rows--;
+
+    if (e->num_rows == 0) {
+        free(e->rows);
+        e->rows = NULL;
+    } else {
+        e->rows = realloc(
+            e->rows,
+            sizeof(Row) * e->num_rows
+        );
+    }
 }
 
 
@@ -97,35 +128,17 @@ void editor_open(Editor *e, const char *filename)
 
 void editor_insert_char(Editor *e, int c)
 {
-    /*
-     * 如果文件是空的，先创建第一行。
-     */
     if (e->num_rows == 0) {
         editor_insert_row(e, "", 0);
     }
 
     Row *row = &e->rows[e->cy];
 
-    /*
-     * 给这一行多申请一个字符的位置。
-     */
     row->chars = realloc(
         row->chars,
         row->len + 2
     );
 
-    /*
-     * 把 cx 后面的内容整体向右移动一格。
-     *
-     * 例如：
-     *
-     * hello
-     *   ↑
-     *
-     * 插入 X：
-     *
-     * heXllo
-     */
     memmove(
         &row->chars[e->cx + 1],
         &row->chars[e->cx],
@@ -135,7 +148,6 @@ void editor_insert_char(Editor *e, int c)
     row->chars[e->cx] = c;
 
     row->len++;
-
     e->cx++;
 
     e->modified = 1;
@@ -143,7 +155,135 @@ void editor_insert_char(Editor *e, int c)
 
 
 /* =========================================================
- * Delete Character
+ * Newline
+ * ========================================================= */
+
+void editor_insert_newline(Editor *e)
+{
+    if (e->num_rows == 0) {
+        editor_insert_row(e, "", 0);
+    }
+
+    Row *row = &e->rows[e->cy];
+
+    /*
+     * 当前行：
+     *
+     * hello world
+     *      ^
+     *
+     * cx = 5
+     *
+     * 拆成：
+     *
+     * hello
+     *  world
+     */
+
+    int left_len = e->cx;
+    int right_len = row->len - e->cx;
+
+    /*
+     * 先保存右半部分。
+     */
+    char *right = malloc(right_len + 1);
+
+    memcpy(
+        right,
+        &row->chars[e->cx],
+        right_len
+    );
+
+    right[right_len] = '\0';
+
+    /*
+     * 当前行只保留左半部分。
+     */
+    row->chars[left_len] = '\0';
+    row->len = left_len;
+
+    /*
+     * 新增下一行。
+     */
+    e->rows = realloc(
+        e->rows,
+        sizeof(Row) * (e->num_rows + 1)
+    );
+
+    /*
+     * 后面的 Row 整体向后移动。
+     */
+    memmove(
+        &e->rows[e->cy + 2],
+        &e->rows[e->cy + 1],
+        sizeof(Row) * (e->num_rows - e->cy - 1)
+    );
+
+    /*
+     * 新行就是当前行的下一行。
+     */
+    e->rows[e->cy + 1].chars = right;
+    e->rows[e->cy + 1].len = right_len;
+
+    e->num_rows++;
+
+    /*
+     * 光标移动到新行开头。
+     */
+    e->cy++;
+    e->cx = 0;
+
+    e->modified = 1;
+}
+
+
+/* =========================================================
+ * Merge Rows
+ * ========================================================= */
+
+void editor_merge_rows(Editor *e, int at)
+{
+    /*
+     * 合并：
+     *
+     * rows[at]
+     * rows[at + 1]
+     *
+     * 成：
+     *
+     * rows[at]
+     */
+
+    if (at < 0 || at >= e->num_rows - 1) {
+        return;
+    }
+
+    Row *current = &e->rows[at];
+    Row *next = &e->rows[at + 1];
+
+    int old_len = current->len;
+
+    current->chars = realloc(
+        current->chars,
+        current->len + next->len + 1
+    );
+
+    memcpy(
+        &current->chars[old_len],
+        next->chars,
+        next->len
+    );
+
+    current->len += next->len;
+
+    current->chars[current->len] = '\0';
+
+    editor_delete_row(e, at + 1);
+}
+
+
+/* =========================================================
+ * Backspace
  * ========================================================= */
 
 void editor_del_char(Editor *e)
@@ -155,46 +295,62 @@ void editor_del_char(Editor *e)
     Row *row = &e->rows[e->cy];
 
     /*
-     * 光标在行首时不能再删除左边的字符。
+     * 如果不在行首，删除左边字符。
      */
-    if (e->cx == 0) {
+    if (e->cx > 0) {
+
+        memmove(
+            &row->chars[e->cx - 1],
+            &row->chars[e->cx],
+            row->len - e->cx + 1
+        );
+
+        row->len--;
+
+        e->cx--;
+
+        row->chars = realloc(
+            row->chars,
+            row->len + 1
+        );
+
+        e->modified = 1;
+
         return;
     }
 
     /*
-     * 删除光标左边的字符。
-     *
-     * 例如：
-     *
-     * heXllo
-     *    ↑
-     *
-     * Backspace 后：
+     * 如果在第一行行首，没有东西可以删除。
+     */
+    if (e->cy == 0) {
+        return;
+    }
+
+    /*
+     * 行首 Backspace：
      *
      * hello
-     *   ↑
+     * |
+     * world
+     *
+     * 变成：
+     *
+     * hello|world
      */
-    memmove(
-        &row->chars[e->cx - 1],
-        &row->chars[e->cx],
-        row->len - e->cx + 1
-    );
 
-    row->len--;
+    int previous_len = e->rows[e->cy - 1].len;
 
-    e->cx--;
+    editor_merge_rows(e, e->cy - 1);
 
-    row->chars = realloc(
-        row->chars,
-        row->len + 1
-    );
+    e->cy--;
+    e->cx = previous_len;
 
     e->modified = 1;
 }
 
 
 /* =========================================================
- * Delete Key
+ * Delete
  * ========================================================= */
 
 void editor_delete_char(Editor *e)
@@ -206,40 +362,45 @@ void editor_delete_char(Editor *e)
     Row *row = &e->rows[e->cy];
 
     /*
-     * 如果光标已经在行尾，
-     * 当前这一版暂时什么都不做。
-     *
-     * 后面的 Enter / 行合并会解决这个问题。
+     * 行内 Delete。
      */
-    if (e->cx >= row->len) {
+    if (e->cx < row->len) {
+
+        memmove(
+            &row->chars[e->cx],
+            &row->chars[e->cx + 1],
+            row->len - e->cx
+        );
+
+        row->len--;
+
+        row->chars = realloc(
+            row->chars,
+            row->len + 1
+        );
+
+        e->modified = 1;
+
         return;
     }
 
     /*
-     * 删除光标右边的字符。
+     * 光标在行尾：
      *
-     * 例如：
+     * hello|
+     * world
      *
-     * he|llo
+     * 合并成：
      *
-     * Delete：
-     *
-     * he|lo
+     * hello|world
      */
-    memmove(
-        &row->chars[e->cx],
-        &row->chars[e->cx + 1],
-        row->len - e->cx
-    );
 
-    row->len--;
+    if (e->cy < e->num_rows - 1) {
 
-    row->chars = realloc(
-        row->chars,
-        row->len + 1
-    );
+        editor_merge_rows(e, e->cy);
 
-    e->modified = 1;
+        e->modified = 1;
+    }
 }
 
 
@@ -269,19 +430,31 @@ void editor_move_cursor(Editor *e, int key)
 
         if (e->cx > 0) {
             e->cx--;
+
+        } else if (e->cy > 0) {
+
+            /*
+             * 左移到上一行行尾。
+             */
+            e->cy--;
+            e->cx = e->rows[e->cy].len;
         }
 
     } else if (key == KEY_RIGHT) {
 
         if (e->cx < e->rows[e->cy].len) {
             e->cx++;
+
+        } else if (e->cy < e->num_rows - 1) {
+
+            /*
+             * 右移到下一行开头。
+             */
+            e->cy++;
+            e->cx = 0;
         }
     }
 
-    /*
-     * 上下移动以后，
-     * 防止 cx 超过当前行长度。
-     */
     if (e->cx > e->rows[e->cy].len) {
         e->cx = e->rows[e->cy].len;
     }
@@ -347,40 +520,31 @@ int main(int argc, char *argv[])
             break;
         }
 
-        /*
-         * 普通字符
-         */
         if (key >= 32 && key <= 126) {
-            editor_insert_char(&editor, key);
-        }
 
-        /*
-         * 光标移动
-         */
-        else if (key == KEY_UP ||
-                 key == KEY_DOWN ||
-                 key == KEY_LEFT ||
-                 key == KEY_RIGHT) {
+            editor_insert_char(&editor, key);
+
+        } else if (key == KEY_UP ||
+                   key == KEY_DOWN ||
+                   key == KEY_LEFT ||
+                   key == KEY_RIGHT) {
 
             editor_move_cursor(&editor, key);
-        }
 
-        /*
-         * Backspace
-         */
-        else if (key == KEY_BACKSPACE ||
-                 key == 127 ||
-                 key == 8) {
+        } else if (key == KEY_BACKSPACE ||
+                   key == 127 ||
+                   key == 8) {
 
             editor_del_char(&editor);
-        }
 
-        /*
-         * Delete
-         */
-        else if (key == KEY_DC) {
+        } else if (key == KEY_DC) {
 
             editor_delete_char(&editor);
+
+        } else if (key == '\n' ||
+                   key == KEY_ENTER) {
+
+            editor_insert_newline(&editor);
         }
     }
 
