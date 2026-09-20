@@ -2,100 +2,196 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
-/* 渲染文件内容到 ncurses 屏幕 */
-void render_file(FILE *fp) {
-    char line[1024];
-    int row = 0;
-    int max_y, max_x;
-    getmaxyx(stdscr, max_y, max_x);
+typedef struct {
+    char *chars;
+    int len;
+} Row;
 
-    /* 逐行读取文件内容 */
-    while (fgets(line, sizeof(line), fp) != NULL && row < max_y) {
-        /* 清除行末换行符 */
-        size_t len = strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-            line[len - 1] = '\0';
+typedef struct {
+    Row *rows;
+    int num_rows;
+
+    // 光标在“文本”中的位置
+    int cx;
+    int cy;
+} Editor;
+
+
+/* ==================== Row ==================== */
+
+void editor_insert_row(Editor *e, const char *s, int len)
+{
+    e->rows = realloc(
+        e->rows,
+        sizeof(Row) * (e->num_rows + 1)
+    );
+
+    Row *row = &e->rows[e->num_rows];
+
+    row->chars = malloc(len + 1);
+
+    memcpy(row->chars, s, len);
+    row->chars[len] = '\0';
+
+    row->len = len;
+
+    e->num_rows++;
+}
+
+
+void editor_free(Editor *e)
+{
+    for (int i = 0; i < e->num_rows; i++) {
+        free(e->rows[i].chars);
+    }
+
+    free(e->rows);
+}
+
+
+/* ==================== File ==================== */
+
+void editor_open(Editor *e, const char *filename)
+{
+    FILE *fp = fopen(filename, "r");
+
+    if (fp == NULL) {
+        return;
+    }
+
+    char *line = NULL;
+    size_t capacity = 0;
+    ssize_t len;
+
+    while ((len = getline(&line, &capacity, fp)) != -1) {
+
+        while (len > 0 &&
+               (line[len - 1] == '\n' ||
+                line[len - 1] == '\r')) {
             len--;
         }
-        
-        /* 关键改动片段：使用 mvaddnstr 渲染屏幕允许的最大宽度，防止截断报错 */
-        mvaddnstr(row, 0, line, max_x);
-        row++;
+
+        editor_insert_row(e, line, len);
+    }
+
+    free(line);
+    fclose(fp);
+}
+
+
+/* ==================== Cursor ==================== */
+
+void editor_move_cursor(Editor *e, int key)
+{
+    if (key == KEY_UP) {
+
+        if (e->cy > 0) {
+            e->cy--;
+        }
+
+    } else if (key == KEY_DOWN) {
+
+        if (e->cy < e->num_rows - 1) {
+            e->cy++;
+        }
+
+    } else if (key == KEY_LEFT) {
+
+        if (e->cx > 0) {
+            e->cx--;
+        }
+
+    } else if (key == KEY_RIGHT) {
+
+        if (e->cy < e->num_rows &&
+            e->cx < e->rows[e->cy].len) {
+            e->cx++;
+        }
+    }
+
+    /*
+     * 上下移动后，当前行可能比原来的 x 短。
+     * 所以要把 cx 限制在当前行末尾。
+     */
+    if (e->num_rows > 0 &&
+        e->cy >= 0 &&
+        e->cy < e->num_rows &&
+        e->cx > e->rows[e->cy].len) {
+
+        e->cx = e->rows[e->cy].len;
     }
 }
 
-int main(int argc, char *argv[]) {
-    /* 1. 命令行参数检查 */
+
+/* ==================== Screen ==================== */
+
+void editor_draw(Editor *e)
+{
+    erase();
+
+    int max_y, max_x;
+    getmaxyx(stdscr, max_y, max_x);
+
+    for (int i = 0; i < e->num_rows && i < max_y; i++) {
+
+        mvaddnstr(
+            i,
+            0,
+            e->rows[i].chars,
+            max_x
+        );
+    }
+
+    move(e->cy, e->cx);
+
+    refresh();
+}
+
+
+/* ==================== Main ==================== */
+
+int main(int argc, char *argv[])
+{
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
         return 1;
     }
 
-    /* 2. 初始化 ncurses */
+    Editor editor = {0};
+
+    editor_open(&editor, argv[1]);
+
     initscr();
+
     raw();
     noecho();
     keypad(stdscr, TRUE);
 
-    /* 关键改动片段：尝试打开文件，失败时在 ncurses 界面优雅提示 */
-    FILE *fp = fopen(argv[1], "r");
-    if (!fp) {
-        printw("Error: Cannot open file '%s'. Press any key to exit...", argv[1]);
-        refresh();
-        getch();
-        endwin();
-        return 1;
-    }
-
-    /* 关键改动片段：读取并渲染文件 */
-    render_file(fp);
-    fclose(fp);
-
-    int y = 0, x = 0;
-    int max_y = 0, max_x = 0;
-    int ch;
-
     while (1) {
-        getmaxyx(stdscr, max_y, max_x);
 
-        if (y >= max_y) y = max_y - 1;
-        if (x >= max_x) x = max_x - 1;
+        editor_draw(&editor);
 
-        move(y, x);
-        refresh();
+        int key = getch();
 
-        ch = getch();
-
-        if (ch == CTRL_KEY('q')) {
+        if (key == CTRL_KEY('q')) {
             break;
         }
 
-        switch (ch) {
-            case KEY_UP:
-                if (y > 0) y--;
-                break;
-            case KEY_DOWN:
-                if (y < max_y - 1) y++;
-                break;
-            case KEY_LEFT:
-                if (x > 0) x--;
-                break;
-            case KEY_RIGHT:
-                if (x < max_x - 1) x++;
-                break;
-            default:
-                if (isprint(ch)) {
-                    addch(ch);
-                    if (x < max_x - 1) x++;
-                }
-                break;
+        if (key == KEY_UP ||
+            key == KEY_DOWN ||
+            key == KEY_LEFT ||
+            key == KEY_RIGHT) {
+
+            editor_move_cursor(&editor, key);
         }
     }
 
     endwin();
+
+    editor_free(&editor);
+
     return 0;
 }
