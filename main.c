@@ -1,34 +1,75 @@
 #include <ncurses.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <ctype.h>
 
-/* 定义 Ctrl 键组合宏：将字符与 0x1f 按位与，得到对应的控制字符 ASCII 码 */
 #define CTRL_KEY(k) ((k) & 0x1f)
 
-int main(void) {
-    /* 1. 初始化 ncurses */
-    initscr();
-    cbreak();             /* 禁用行缓冲 */
-    noecho();             /* 禁用自动回显 */
-    keypad(stdscr, TRUE); /* 开启功能键支持 */
+/* 渲染文件内容到 ncurses 屏幕 */
+void render_file(FILE *fp) {
+    char line[1024];
+    int row = 0;
+    int max_y, max_x;
+    getmaxyx(stdscr, max_y, max_x);
 
-    int y = 0, x = 0;     /* 记录光标位置 */
+    /* 逐行读取文件内容 */
+    while (fgets(line, sizeof(line), fp) != NULL && row < max_y) {
+        /* 清除行末换行符 */
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+            line[len - 1] = '\0';
+            len--;
+        }
+        
+        /* 关键改动片段：使用 mvaddnstr 渲染屏幕允许的最大宽度，防止截断报错 */
+        mvaddnstr(row, 0, line, max_x);
+        row++;
+    }
+}
+
+int main(int argc, char *argv[]) {
+    /* 1. 命令行参数检查 */
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
+        return 1;
+    }
+
+    /* 2. 初始化 ncurses */
+    initscr();
+    raw();
+    noecho();
+    keypad(stdscr, TRUE);
+
+    /* 关键改动片段：尝试打开文件，失败时在 ncurses 界面优雅提示 */
+    FILE *fp = fopen(argv[1], "r");
+    if (!fp) {
+        printw("Error: Cannot open file '%s'. Press any key to exit...", argv[1]);
+        refresh();
+        getch();
+        endwin();
+        return 1;
+    }
+
+    /* 关键改动片段：读取并渲染文件 */
+    render_file(fp);
+    fclose(fp);
+
+    int y = 0, x = 0;
     int max_y = 0, max_x = 0;
     int ch;
 
     while (1) {
-        /* 关键改动片段：获取当前窗口的边界最大值 */
         getmaxyx(stdscr, max_y, max_x);
 
-        /* 边界检查：确保窗口缩小时光标不会越界 */
         if (y >= max_y) y = max_y - 1;
         if (x >= max_x) x = max_x - 1;
 
-        move(y, x);       /* 移动光标到指定位置 */
-        refresh();        /* 刷新屏幕 */
+        move(y, x);
+        refresh();
 
-        ch = getch();     /* 读取键盘输入 */
+        ch = getch();
 
-        /* 关键改动片段：按键处理逻辑，使用 Ctrl-Q 退出，移除 Esc 退出 */
         if (ch == CTRL_KEY('q')) {
             break;
         }
@@ -49,16 +90,12 @@ int main(void) {
             default:
                 if (isprint(ch)) {
                     addch(ch);
-                    /* 打印字符后光标右移，但不能超过屏幕右边界 */
-                    if (x < max_x - 1) {
-                        x++;
-                    }
+                    if (x < max_x - 1) x++;
                 }
                 break;
         }
     }
 
-    /* 2. 正确恢复终端状态 */
     endwin();
     return 0;
 }
