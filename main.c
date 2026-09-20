@@ -16,10 +16,17 @@ typedef struct {
     Row *rows;
     int num_rows;
 
+    /* 光标在文件中的位置 */
     int cx;
     int cy;
 
+    /* 屏幕左上角对应的文件位置 */
+    int row_offset;
+    int col_offset;
+
     int modified;
+
+    char *filename;
 } Editor;
 
 
@@ -55,9 +62,6 @@ void editor_delete_row(Editor *e, int at)
 
     free(e->rows[at].chars);
 
-    /*
-     * 把后面的 Row 往前移动。
-     */
     memmove(
         &e->rows[at],
         &e->rows[at + 1],
@@ -85,6 +89,7 @@ void editor_free(Editor *e)
     }
 
     free(e->rows);
+    free(e->filename);
 }
 
 
@@ -166,26 +171,9 @@ void editor_insert_newline(Editor *e)
 
     Row *row = &e->rows[e->cy];
 
-    /*
-     * 当前行：
-     *
-     * hello world
-     *      ^
-     *
-     * cx = 5
-     *
-     * 拆成：
-     *
-     * hello
-     *  world
-     */
-
     int left_len = e->cx;
     int right_len = row->len - e->cx;
 
-    /*
-     * 先保存右半部分。
-     */
     char *right = malloc(right_len + 1);
 
     memcpy(
@@ -196,40 +184,25 @@ void editor_insert_newline(Editor *e)
 
     right[right_len] = '\0';
 
-    /*
-     * 当前行只保留左半部分。
-     */
     row->chars[left_len] = '\0';
     row->len = left_len;
 
-    /*
-     * 新增下一行。
-     */
     e->rows = realloc(
         e->rows,
         sizeof(Row) * (e->num_rows + 1)
     );
 
-    /*
-     * 后面的 Row 整体向后移动。
-     */
     memmove(
         &e->rows[e->cy + 2],
         &e->rows[e->cy + 1],
         sizeof(Row) * (e->num_rows - e->cy - 1)
     );
 
-    /*
-     * 新行就是当前行的下一行。
-     */
     e->rows[e->cy + 1].chars = right;
     e->rows[e->cy + 1].len = right_len;
 
     e->num_rows++;
 
-    /*
-     * 光标移动到新行开头。
-     */
     e->cy++;
     e->cx = 0;
 
@@ -243,17 +216,6 @@ void editor_insert_newline(Editor *e)
 
 void editor_merge_rows(Editor *e, int at)
 {
-    /*
-     * 合并：
-     *
-     * rows[at]
-     * rows[at + 1]
-     *
-     * 成：
-     *
-     * rows[at]
-     */
-
     if (at < 0 || at >= e->num_rows - 1) {
         return;
     }
@@ -275,7 +237,6 @@ void editor_merge_rows(Editor *e, int at)
     );
 
     current->len += next->len;
-
     current->chars[current->len] = '\0';
 
     editor_delete_row(e, at + 1);
@@ -294,9 +255,6 @@ void editor_del_char(Editor *e)
 
     Row *row = &e->rows[e->cy];
 
-    /*
-     * 如果不在行首，删除左边字符。
-     */
     if (e->cx > 0) {
 
         memmove(
@@ -306,7 +264,6 @@ void editor_del_char(Editor *e)
         );
 
         row->len--;
-
         e->cx--;
 
         row->chars = realloc(
@@ -319,24 +276,9 @@ void editor_del_char(Editor *e)
         return;
     }
 
-    /*
-     * 如果在第一行行首，没有东西可以删除。
-     */
     if (e->cy == 0) {
         return;
     }
-
-    /*
-     * 行首 Backspace：
-     *
-     * hello
-     * |
-     * world
-     *
-     * 变成：
-     *
-     * hello|world
-     */
 
     int previous_len = e->rows[e->cy - 1].len;
 
@@ -361,9 +303,6 @@ void editor_delete_char(Editor *e)
 
     Row *row = &e->rows[e->cy];
 
-    /*
-     * 行内 Delete。
-     */
     if (e->cx < row->len) {
 
         memmove(
@@ -383,17 +322,6 @@ void editor_delete_char(Editor *e)
 
         return;
     }
-
-    /*
-     * 光标在行尾：
-     *
-     * hello|
-     * world
-     *
-     * 合并成：
-     *
-     * hello|world
-     */
 
     if (e->cy < e->num_rows - 1) {
 
@@ -433,9 +361,6 @@ void editor_move_cursor(Editor *e, int key)
 
         } else if (e->cy > 0) {
 
-            /*
-             * 左移到上一行行尾。
-             */
             e->cy--;
             e->cx = e->rows[e->cy].len;
         }
@@ -447,9 +372,6 @@ void editor_move_cursor(Editor *e, int key)
 
         } else if (e->cy < e->num_rows - 1) {
 
-            /*
-             * 右移到下一行开头。
-             */
             e->cy++;
             e->cx = 0;
         }
@@ -462,8 +384,80 @@ void editor_move_cursor(Editor *e, int key)
 
 
 /* =========================================================
+ * Scroll
+ * ========================================================= */
+
+void editor_scroll(Editor *e)
+{
+    int max_y, max_x;
+    getmaxyx(stdscr, max_y, max_x);
+
+    int text_rows = max_y - 1;
+
+    if (text_rows < 1) {
+        text_rows = 1;
+    }
+
+    if (e->cy < e->row_offset) {
+        e->row_offset = e->cy;
+    }
+
+    if (e->cy >= e->row_offset + text_rows) {
+        e->row_offset = e->cy - text_rows + 1;
+    }
+
+    if (e->cx < e->col_offset) {
+        e->col_offset = e->cx;
+    }
+
+    if (e->cx >= e->col_offset + max_x) {
+        e->col_offset = e->cx - max_x + 1;
+    }
+}
+
+/* =========================================================
  * Screen
  * ========================================================= */
+
+
+
+void editor_draw_status_bar(Editor *e)
+{
+    int max_y, max_x;
+    getmaxyx(stdscr, max_y, max_x);
+
+    int status_y = max_y - 1;
+
+    attron(A_REVERSE);
+
+    mvhline(status_y, 0, ' ', max_x);
+
+    mvprintw(
+        status_y,
+        0,
+        "dian_editor - %s%s",
+        e->filename,
+        e->modified ? " [modified]" : ""
+    );
+
+    char position[50];
+
+    snprintf(
+        position,
+        sizeof(position),
+        " %d:%d ",
+        e->cy + 1,
+        e->cx + 1
+    );
+
+    int position_x = max_x - strlen(position);
+
+    if (position_x > 0) {
+        mvprintw(status_y, position_x, "%s", position);
+    }
+
+    attroff(A_REVERSE);
+}
 
 void editor_draw(Editor *e)
 {
@@ -472,22 +466,30 @@ void editor_draw(Editor *e)
     int max_y, max_x;
     getmaxyx(stdscr, max_y, max_x);
 
-    for (int i = 0;
-         i < e->num_rows && i < max_y;
-         i++) {
+    editor_scroll(e);
 
-        mvaddnstr(
-            i,
-            0,
-            e->rows[i].chars,
-            max_x
-        );
+    for (int screen_y = 0; screen_y < max_y - 1; screen_y++) {
+        int file_y = e->row_offset + screen_y;
+        if (file_y >= e->num_rows) break;
+
+        Row *row = &e->rows[file_y];
+
+        if (e->col_offset < row->len) {
+            mvaddnstr(screen_y, 0,
+                      &row->chars[e->col_offset],
+                      max_x);
+        }
     }
 
-    move(e->cy, e->cx);
+    editor_draw_status_bar(e);   // 在这里调用
+
+    int screen_y = e->cy - e->row_offset;
+    int screen_x = e->cx - e->col_offset;
+    move(screen_y, screen_x);
 
     refresh();
 }
+
 
 
 /* =========================================================
@@ -503,9 +505,12 @@ int main(int argc, char *argv[])
 
     Editor editor = {0};
 
+    editor.filename = strdup(argv[1]);
+
     editor_open(&editor, argv[1]);
 
     initscr();
+
     raw();
     noecho();
     keypad(stdscr, TRUE);
@@ -513,7 +518,7 @@ int main(int argc, char *argv[])
     while (1) {
 
         editor_draw(&editor);
-
+        
         int key = getch();
 
         if (key == CTRL_KEY('q')) {
