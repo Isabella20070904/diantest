@@ -16,19 +16,18 @@ typedef struct {
     Row *rows;
     int num_rows;
 
-    /* 光标在文件中的位置 */
     int cx;
     int cy;
 
-    /* 屏幕左上角对应的文件位置 */
     int row_offset;
     int col_offset;
 
     int modified;
 
     char *filename;
-} Editor;
 
+    char status_msg[80];
+} Editor;
 
 /* =========================================================
  * Row
@@ -432,12 +431,28 @@ void editor_draw_status_bar(Editor *e)
 
     mvhline(status_y, 0, ' ', max_x);
 
+    char left_status[100];
+
+    snprintf(
+        left_status,
+        sizeof(left_status),
+        "dedit - %s%s",
+        e->filename,
+        e->modified ? " [modified]" : ""
+    );
+
     mvprintw(
         status_y,
         0,
-        "dian_editor - %s%s",
-        e->filename,
-        e->modified ? " [modified]" : ""
+        "%s",
+        left_status
+    );
+
+    mvprintw(
+        status_y,
+        max_x / 2,
+        "%s",
+        e->status_msg
     );
 
     char position[50];
@@ -453,7 +468,12 @@ void editor_draw_status_bar(Editor *e)
     int position_x = max_x - strlen(position);
 
     if (position_x > 0) {
-        mvprintw(status_y, position_x, "%s", position);
+        mvprintw(
+            status_y,
+            position_x,
+            "%s",
+            position
+        );
     }
 
     attroff(A_REVERSE);
@@ -490,11 +510,46 @@ void editor_draw(Editor *e)
     refresh();
 }
 
+void editor_set_status(Editor *e, const char *msg)
+{
+    snprintf(
+        e->status_msg,
+        sizeof(e->status_msg),
+        "%s",
+        msg
+    );
+}
 
+int editor_save(Editor *e)
+{
+    FILE *fp = fopen(e->filename, "w");
 
+    if (fp == NULL) {
+        return 0;
+    }
+
+    for (int i = 0; i < e->num_rows; i++) {
+        fwrite(
+            e->rows[i].chars,
+            1,
+            e->rows[i].len,
+            fp
+        );
+
+        fputc('\n', fp);
+    }
+
+    fclose(fp);
+
+    e->modified = 0;
+
+    return 1;
+}
 /* =========================================================
  * Main
  * ========================================================= */
+
+
 
 int main(int argc, char *argv[])
 {
@@ -515,44 +570,67 @@ int main(int argc, char *argv[])
     noecho();
     keypad(stdscr, TRUE);
 
+    int quit_times = 2;
+
     while (1) {
+    editor_draw(&editor);
 
-        editor_draw(&editor);
-        
-        int key = getch();
+    int key = getch();
 
-        if (key == CTRL_KEY('q')) {
-            break;
-        }
-
-        if (key >= 32 && key <= 126) {
-
-            editor_insert_char(&editor, key);
-
-        } else if (key == KEY_UP ||
-                   key == KEY_DOWN ||
-                   key == KEY_LEFT ||
-                   key == KEY_RIGHT) {
-
-            editor_move_cursor(&editor, key);
-
-        } else if (key == KEY_BACKSPACE ||
-                   key == 127 ||
-                   key == 8) {
-
-            editor_del_char(&editor);
-
-        } else if (key == KEY_DC) {
-
-            editor_delete_char(&editor);
-
-        } else if (key == '\n' ||
-                   key == KEY_ENTER) {
-
-            editor_insert_newline(&editor);
-        }
+    if (key == CTRL_KEY('s')) {
+        editor_save(&editor);
     }
+    else if (key == CTRL_KEY('q')) {
 
+        if (editor.modified) {
+
+            if (quit_times > 1) {
+                editor_set_status(
+                    &editor,
+                    "WARNING: Unsaved changes! Press Ctrl-Q again to quit."
+                );
+
+                quit_times--;
+                continue;
+            }
+        }
+
+        break;
+    }
+    else if (key >= 32 && key <= 126) {
+        editor_insert_char(&editor, key);
+        quit_times = 2;
+    }
+    else if (
+        key == KEY_UP ||
+        key == KEY_DOWN ||
+        key == KEY_LEFT ||
+        key == KEY_RIGHT
+    ) {
+        editor_move_cursor(&editor, key);
+        quit_times = 2;
+    }
+    else if (
+        key == KEY_BACKSPACE ||
+        key == 127 ||
+        key == 8
+    ) {
+        editor_del_char(&editor);
+        quit_times = 2;
+    }
+    else if (key == KEY_DC) {
+        editor_delete_char(&editor);
+        quit_times = 2;
+    }
+    else if (
+        key == '\n' ||
+        key == KEY_ENTER
+    ) {
+        editor_insert_newline(&editor);
+        quit_times = 2;
+    }
+}
+    
     endwin();
 
     editor_free(&editor);
