@@ -25,3 +25,26 @@ ncurses提供两种模式：`cbreak()`仅关闭行缓冲，保留流控；`raw()
 Ctrl-S
  ↓
 内存 → 文件
+
+
+自动化测试
+            现在
+
+键盘
+ ↓
+getch()
+ ↓
+一大坨 if/else
+ ↓
+Editor
+
+
+
+变成
+             键盘
+              ↓
+            getch()
+              ↓
+      editor_process_key()
+              ↓
+            Editor

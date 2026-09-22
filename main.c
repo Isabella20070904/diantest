@@ -27,6 +27,8 @@ typedef struct {
     char *filename;
 
     char status_msg[80];
+
+    int quit_times;
 } Editor;
 
 /* =========================================================
@@ -545,6 +547,151 @@ int editor_save(Editor *e)
 
     return 1;
 }
+
+int editor_process_key(Editor *e, int key)
+{
+    if (key == CTRL_KEY('s')) {
+        editor_save(e);
+        e->quit_times = 2;
+        return 0;
+    }
+
+    if (key == CTRL_KEY('q')) {
+
+        if (e->modified) {
+
+            if (e->quit_times > 1) {
+                editor_set_status(
+                    e,
+                    "WARNING: Unsaved changes! Press Ctrl-Q again to quit."
+                );
+
+                e->quit_times--;
+                return 0;
+            }
+        }
+
+        return 1;
+    }
+
+    e->quit_times = 2;
+
+    if (key >= 32 && key <= 126) {
+        editor_insert_char(e, key);
+    }
+    else if (
+        key == KEY_UP ||
+        key == KEY_DOWN ||
+        key == KEY_LEFT ||
+        key == KEY_RIGHT
+    ) {
+        editor_move_cursor(e, key);
+    }
+    else if (
+        key == KEY_BACKSPACE ||
+        key == 127 ||
+        key == 8
+    ) {
+        editor_del_char(e);
+    }
+    else if (key == KEY_DC) {
+        editor_delete_char(e);
+    }
+    else if (
+        key == '\n' ||
+        key == KEY_ENTER
+    ) {
+        editor_insert_newline(e);
+    }
+
+    return 0;
+}
+
+int parse_key(const char *token)
+{
+    if (strcmp(token, "<Enter>") == 0) {
+        return '\n';
+    }
+
+    if (strcmp(token, "<Backspace>") == 0) {
+        return KEY_BACKSPACE;
+    }
+
+    if (strcmp(token, "<Del>") == 0) {
+        return KEY_DC;
+    }
+
+    if (strcmp(token, "<Ctrl-S>") == 0) {
+        return CTRL_KEY('s');
+    }
+
+    if (strcmp(token, "<Ctrl-Q>") == 0) {
+        return CTRL_KEY('q');
+    }
+
+    if (strcmp(token, "<Esc>") == 0) {
+        return 27;
+    }
+
+    if (strcmp(token, "<Up>") == 0) {
+        return KEY_UP;
+    }
+
+    if (strcmp(token, "<Down>") == 0) {
+        return KEY_DOWN;
+    }
+
+    if (strcmp(token, "<Left>") == 0) {
+        return KEY_LEFT;
+    }
+
+    if (strcmp(token, "<Right>") == 0) {
+        return KEY_RIGHT;
+    }
+
+    if (strlen(token) == 1) {
+        return (unsigned char)token[0];
+    }
+
+    return -1;
+}
+
+void run_basic_test(void)
+{
+    Editor e = {0};
+
+    e.filename = strdup("test_output.txt");
+    e.quit_times = 2;
+
+
+    editor_process_key(&e, 'h');
+    editor_process_key(&e, 'e');
+    editor_process_key(&e, 'l');
+    editor_process_key(&e, 'l');
+    editor_process_key(&e, 'o');
+
+    editor_process_key(&e, '\n');
+
+    editor_process_key(&e, 'w');
+    editor_process_key(&e, 'o');
+    editor_process_key(&e, 'r');
+    editor_process_key(&e, 'l');
+    editor_process_key(&e, 'd');
+
+    if (
+        e.num_rows == 2 &&
+        strcmp(e.rows[0].chars, "hello") == 0 &&
+        strcmp(e.rows[1].chars, "world") == 0
+    ) {
+        printf("[PASS] basic typing\n");
+    }
+    else {
+        printf("[FAIL] basic typing\n");
+    }
+
+    editor_free(&e);
+}
+
 /* =========================================================
  * Main
  * ========================================================= */
@@ -553,14 +700,22 @@ int editor_save(Editor *e)
 
 int main(int argc, char *argv[])
 {
-    if (argc != 2) {
+    
+    if (argc >= 2 && strcmp(argv[1], "--test") == 0) {
+        run_basic_test();
+        return 0;
+    }
+
+    if (argc < 2) {
         fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
         return 1;
     }
+    
 
     Editor editor = {0};
 
     editor.filename = strdup(argv[1]);
+    editor.quit_times=2;
 
     editor_open(&editor, argv[1]);
 
@@ -577,57 +732,8 @@ int main(int argc, char *argv[])
 
     int key = getch();
 
-    if (key == CTRL_KEY('s')) {
-        editor_save(&editor);
-    }
-    else if (key == CTRL_KEY('q')) {
-
-        if (editor.modified) {
-
-            if (quit_times > 1) {
-                editor_set_status(
-                    &editor,
-                    "WARNING: Unsaved changes! Press Ctrl-Q again to quit."
-                );
-
-                quit_times--;
-                continue;
-            }
-        }
-
+    if (editor_process_key(&editor, key)) {
         break;
-    }
-    else if (key >= 32 && key <= 126) {
-        editor_insert_char(&editor, key);
-        quit_times = 2;
-    }
-    else if (
-        key == KEY_UP ||
-        key == KEY_DOWN ||
-        key == KEY_LEFT ||
-        key == KEY_RIGHT
-    ) {
-        editor_move_cursor(&editor, key);
-        quit_times = 2;
-    }
-    else if (
-        key == KEY_BACKSPACE ||
-        key == 127 ||
-        key == 8
-    ) {
-        editor_del_char(&editor);
-        quit_times = 2;
-    }
-    else if (key == KEY_DC) {
-        editor_delete_char(&editor);
-        quit_times = 2;
-    }
-    else if (
-        key == '\n' ||
-        key == KEY_ENTER
-    ) {
-        editor_insert_newline(&editor);
-        quit_times = 2;
     }
 }
     
