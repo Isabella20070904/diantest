@@ -420,8 +420,6 @@ void editor_scroll(Editor *e)
  * Screen
  * ========================================================= */
 
-
-
 void editor_draw_status_bar(Editor *e)
 {
     int max_y, max_x;
@@ -439,7 +437,7 @@ void editor_draw_status_bar(Editor *e)
         left_status,
         sizeof(left_status),
         "dedit - %s%s",
-        e->filename,
+        e->filename ? e->filename : "[No Name]",
         e->modified ? " [modified]" : ""
     );
 
@@ -503,7 +501,7 @@ void editor_draw(Editor *e)
         }
     }
 
-    editor_draw_status_bar(e);   // 在这里调用
+    editor_draw_status_bar(e);
 
     int screen_y = e->cy - e->row_offset;
     int screen_x = e->cx - e->col_offset;
@@ -524,6 +522,8 @@ void editor_set_status(Editor *e, const char *msg)
 
 int editor_save(Editor *e)
 {
+    if (!e->filename) return 0;
+
     FILE *fp = fopen(e->filename, "w");
 
     if (fp == NULL) {
@@ -551,7 +551,11 @@ int editor_save(Editor *e)
 int editor_process_key(Editor *e, int key)
 {
     if (key == CTRL_KEY('s')) {
-        editor_save(e);
+        if (editor_save(e)) {
+            editor_set_status(e, "File saved successfully.");
+        } else {
+            editor_set_status(e, "Error saving file!");
+        }
         e->quit_times = 2;
         return 0;
     }
@@ -607,6 +611,7 @@ int editor_process_key(Editor *e, int key)
     return 0;
 }
 
+/* 修改：保持与函数调用一致名称 */
 int parse_key(const char *token)
 {
     if (strcmp(token, "<Enter>") == 0) {
@@ -656,13 +661,102 @@ int parse_key(const char *token)
     return -1;
 }
 
+int run_test_input(Editor *e, const char *input)
+{
+    int len = strlen(input);
+
+    for (int i = 0; i < len; ) {
+
+        if (input[i] == '<') {
+
+            const char *end = strchr(&input[i], '>');
+
+            if (end == NULL) {
+                return 0;
+            }
+
+            int token_len = end - &input[i] + 1;
+
+            char token[50];
+
+            if (token_len >= sizeof(token)) {
+                return 0;
+            }
+
+            memcpy(token, &input[i], token_len);
+            token[token_len] = '\0';
+
+            int key = parse_key(token);
+
+            if (key == -1) {
+                return 0;
+            }
+
+            editor_process_key(e, key);
+
+            i += token_len;
+        }
+        else {
+            editor_process_key(e, input[i]);
+
+            i++;
+        }
+    }
+
+    return 1;
+}
+
+int run_test_file(const char *filename)
+{
+    FILE *fp = fopen(filename, "r");
+
+    if (fp == NULL) {
+        printf("[FAIL] cannot open %s\n", filename);
+        return 0;
+    }
+
+    char input[4096];
+
+    if (fgets(input, sizeof(input), fp) == NULL) {
+        fclose(fp);
+
+        printf("[FAIL] empty test: %s\n", filename);
+        return 0;
+    }
+
+    fclose(fp);
+
+    input[strcspn(input, "\r\n")] = '\0';
+
+    Editor e = {0};
+
+    e.filename = strdup("test_output.txt");
+    e.quit_times = 2;
+
+    /* 修复：移除了多余的参数 */
+    editor_insert_row(&e, "", 0);
+
+    int ok = run_test_input(&e, input);
+
+    if (!ok) {
+        printf("[FAIL] invalid test input: %s\n", filename);
+        editor_free(&e);
+        return 0;
+    }
+
+    editor_free(&e);
+
+    printf("[PASS] %s\n", filename);
+
+    return 1;
+}
+
 void run_basic_test(void)
 {
     Editor e = {0};
 
     e.filename = strdup("test_output.txt");
     e.quit_times = 2;
-
 
     editor_process_key(&e, 'h');
     editor_process_key(&e, 'e');
@@ -696,13 +790,17 @@ void run_basic_test(void)
  * Main
  * ========================================================= */
 
-
-
 int main(int argc, char *argv[])
 {
-    
+    // 测试模式
     if (argc >= 2 && strcmp(argv[1], "--test") == 0) {
         run_basic_test();
+        return 0;
+    }
+
+    // 测试指定测试用例文件
+    if (argc >= 3 && strcmp(argv[1], "--test-file") == 0) {
+        run_test_file(argv[2]);
         return 0;
     }
 
@@ -710,35 +808,36 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
         return 1;
     }
-    
 
     Editor editor = {0};
 
     editor.filename = strdup(argv[1]);
-    editor.quit_times=2;
+    editor.quit_times = 2;
 
     editor_open(&editor, argv[1]);
 
+    // 初始化终端屏幕
     initscr();
-
     raw();
     noecho();
     keypad(stdscr, TRUE);
 
-    int quit_times = 2;
+    // 设置初始状态栏提示
+    editor_set_status(&editor, "HELP: Ctrl-S = save | Ctrl-Q = quit");
 
+    // 主交互循环
     while (1) {
-    editor_draw(&editor);
+        editor_draw(&editor);
 
-    int key = getch();
+        int key = getch();
 
-    if (editor_process_key(&editor, key)) {
-        break;
+        if (editor_process_key(&editor, key)) {
+            break;
+        }
     }
-}
-    
-    endwin();
 
+    // 恢复终端状态并释放资源
+    endwin();
     editor_free(&editor);
 
     return 0;
